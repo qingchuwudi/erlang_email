@@ -9,12 +9,12 @@
 
 %% send email by email record
 send(Email) when
-        undefined =/= Email#email.server_ip,
+        undefined =/= Email#email.host,
         undefined =/= Email#email.account,
-        undefined =/= Email#email.to_emails,
+        undefined =/= Email#email.to,
         undefined =/= Email#email.password ->
     ServerPort =
-        case Email#email.server_port of
+        case Email#email.port of
             undefined -> case Email#email.ssl of
                              true  -> ?SSL_SERV_PORT_DEF;
                              false -> ?NOT_SSL_SERV_PORT_DEF
@@ -24,13 +24,13 @@ send(Email) when
     Sock =
         case Email#email.ssl of
             false -> {ok, Socket} =
-                         gen_tcp:connect(Email#email.server_ip,
+                         gen_tcp:connect(Email#email.host,
                                          ServerPort,
                                          [binary, {active, false}, {packet, 0}]),
                      #socket{type = tcp, sock = Socket};
             true  -> ok = ssl:start(),
                      {ok, Socket} =
-                         ssl:connect(Email#email.server_ip,
+                         ssl:connect(Email#email.host,
                                      ServerPort,
                                      [binary, {active, false}, {packet, 0}],
                                      infinity),
@@ -68,7 +68,7 @@ send_email_head(Sock, Email) ->
     send_socket(Sock, "MAIL FROM <" ++ Email#email.account ++ ">\r\n"),
     recv_socket(Sock),
 
-    rcpt_to_emails(Sock, Email#email.to_emails),
+    rcpt_to(Sock, Email#email.to),
     recv_socket(Sock).
 
 %% send email info
@@ -156,11 +156,11 @@ send_file_to_email(Sock, Fd, Base64Flag) ->
     end.
 
 %% her email address
-rcpt_to_emails(_Sock, []) ->
+rcpt_to(_Sock, []) ->
     ok;
-rcpt_to_emails(Sock, [ToEmail | Rest]) ->
+rcpt_to(Sock, [ToEmail | Rest]) ->
     send_socket(Sock, "RCPT TO <" ++ ToEmail ++ ">\r\n"),
-    rcpt_to_emails(Sock, Rest).
+    rcpt_to(Sock, Rest).
 
 %% send socket
 send_socket(Sock, Data) when is_list(Data)->
@@ -189,10 +189,10 @@ recv(Sock, Opinion) when Sock#socket.type =:= ssl ->
     ssl:recv(Sock#socket.sock, Opinion).
 
 test() ->
-    send(#email{server_ip   = "smtp.qq.com",
+    send(#email{host   = "smtp.qq.com",
                 account     = "965609038@qq.com",
                 password    = "srbank2013",
                 subject     = "smtp邮件测试",
                 html        = "testfiles/test.html",
                 attachment  = ["testfiles/test.doc", "testfiles/test.html", "testfiles/test.tar", "testfiles/test.txt"],
-                to_emails   = ["281754179@qq.com"]}).
+                to   = ["281754179@qq.com"]}).

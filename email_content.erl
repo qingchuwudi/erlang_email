@@ -5,7 +5,7 @@
 %%% Changed : 2016-3-8 by qingchuwudi <privmail@foxmail.com>
 %%%
 %%%
-%%% erlang_email, Copyright (C) 2016-2016   qingchuwudi
+%%% erlang_email, Copyright (C) 2016   qingchuwudi
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -23,51 +23,51 @@
 %%%
 %%%----------------------------------------------------------------------
 -module(email_content).
--include("email.hrl").
 
 -export([start/0, send/1]).
 -compile(export_all).
 
 -define(MAX_SIZE, 1024).
 
-start() ->
-    ok = ssl:start().
 
 %% send email by email record
-send(Email) when
-        undefined =/= Email#email.server_ip,
-        undefined =/= Email#email.account,
-        undefined =/= Email#email.to_emails,
-        undefined =/= Email#email.password ->
-    ServerPort = case Email#email.server_port of
+%% 传参比原来复杂了
+-spec send(tuple()) -> ok .
+send(Email = #email{
+    host     = Host,
+    account  = Account,
+    to       = ToEmail,
+    password = Password,
+    port     = Port,
+    ssl      = SSL }) when
+        undefined =/= Host,
+        undefined =/= Account,
+        undefined =/= ToEmail,
+        undefined =/= Password ->
+    ServerPort = case Port of
         undefined -> 
-            case Email#email.ssl of
+            case SSL of
                 true  -> ?SSL_SERV_PORT_DEF;
                 false -> ?NOT_SSL_SERV_PORT_DEF
             end;
         Any -> Any
     end,
-    Sock = case Email#email.ssl of
-        false -> 
-            {ok, Socket} = gen_tcp:connect(
-                                    Email#email.server_ip,
-                                    ServerPort,
-                                    [binary, {active, false}, {packet, 0}]),
-            #socket{type = tcp, sock = Socket};
-        true  ->
-            application:ensure_started(ssl),
-            % ok = ssl:start(),
-            {ok, Socket} = ssl:connect(
-                            Email#email.server_ip,
-                            ServerPort,
-                            [binary, {active, false}, {packet, 0}],
+    Sock = if 
+        SSL ->
+            {ok, Socket} = ssl:connect(Host, ServerPort,
+                            [binary, {active, false}],
                             infinity),
-            #socket{type = ssl, sock = Socket}
+            #socket{type = ssl, sock = Socket};
+        true  ->
+            {ok, Socket} = gen_tcp:connect(
+                            Host, ServerPort,
+                            [binary, {active, false}]),
+            #socket{type = tcp, sock = Socket}
     end,
-    connect_email(Sock, Email),
-    send_email_head(Sock, Email),
-    send_email_info(Sock, Email),
-    send_email_data(Sock, Email),
+    connect_email(Sock, Account, Password),
+    send_email_head(Sock, Account, ToEmail),
+    send_email_info(Sock, Account, ToEmail, Email#email.subject),
+    send_email_data(Sock, Email#email.content),
     end_email(Sock),
     case Sock#socket.type of
         ssl -> ssl:close(Sock#socket.sock);
@@ -75,77 +75,65 @@ send(Email) when
     end.
 
 %% 连接邮件服务器
-connect_email(Sock, Email) ->
-   send_socket(Sock, "HELO " ++ Email#email.account ++ "\r\n"),
+connect_email(Sock, Account, Password) ->
+   send_socket(Sock, <<"HELO ", Account/binary, "\r\n">>),
    recv_socket(Sock),
 
-   send_socket(Sock, "AUTH LOGIN\r\n"),
+   send_socket(Sock, <<"AUTH LOGIN\r\n">>),
    recv_socket(Sock),
 
-   send_socket(Sock, base64:encode(Email#email.account)),
-   send_socket(Sock, "\r\n"),
+   send_socket(Sock, <<(base64:encode(Account))/binary, "\r\n">>),
    recv_socket(Sock),
 
-   send_socket(Sock, base64:encode(Email#email.password)),
-   send_socket(Sock, "\r\n"),
+   send_socket(Sock, <<(base64:encode(Password))/binary, "\r\n">>),
    recv_socket(Sock).
 
 %% 邮件头，谁发送，发送给谁
-send_email_head(Sock, Email) ->
-    send_socket(Sock, "MAIL FROM <" ++ Email#email.account ++ ">\r\n"),
-    recv_socket(Sock),
-
-    rcpt_to_emails(Sock, Email#email.to_emails),
-    recv_socket(Sock).
+send_email_head(Sock, Account, ToEmail) ->
+    send_socket(Sock, <<"MAIL FROM: <" , Account/binary , ">\r\n">>),
+    send_socket(Sock, <<"RCPT TO: <" , ToEmail/binary , ">\r\n">>).
 
 %% 邮件信息，主题等
-send_email_info(Sock, Email) ->
-    send_socket(Sock, "DATA\r\n"),
-    recv_socket(Sock),
+send_email_info(Sock, Account, ToEmail, Subject) ->
+    send_socket(Sock, <<"DATA\r\n">>),
 
-    send_socket(Sock, "FROM:<" ++ Email#email.account ++ ">\r\n"),
-    recv_socket(Sock),
-    Subject = unicode:characters_to_list(Email#email.subject),
-    send_socket(Sock, "SUBJECT: "++ Subject ++ "\r\n").
+    send_socket(Sock, <<"FROM:<", Account/binary, ">\r\n">>),
+    send_socket(Sock, <<"To: <", ToEmail/binary, ">\r\n">>),
+    send_socket(Sock, <<"SUBJECT: ", Subject/binary , "\r\n">>).
 
 %% 邮件内容
-send_email_data(Sock, Email) when Email#email.content =/= undefined ->
-    send_socket(Sock, "MIME-VERSION: 1.0\r\n"),
-    send_socket(Sock, "Content-Type:text/html;charset=UTF-8\r\n\r\n"),
-    send_email_content(Email#email.content, Sock);
-send_email_data(_Sock, _Email) ->
-    ok.
+send_email_data(Sock, Content) when Content =/= undefined ->
+    send_socket(Sock, <<"MIME-VERSION: 1.0\r\n">>),
+    send_socket(Sock, <<"Content-Type:text/html;charset=UTF-8\r\n\r\n">>),
+    
+    ok = send(Sock, Content),
+    send_socket(Sock, "\r\n\r\n");
+send_email_data(_, _) -> ok.
 
 end_email(Sock) ->
-    send_socket(Sock, "\r\n.\r\n"),
-    recv_socket(Sock),
+    send_socket(Sock, <<".\r\n">>),
     send_socket(Sock, "QUIT\r\n"),
     recv_socket(Sock).
 
-%% 直接发送内容
-send_email_content(Data, Sock) ->
-    ok = send(Sock, Data),
-    send_socket(Sock, "\r\n\r\n").
-
-%% 收件人地址
-rcpt_to_emails(_Sock, []) ->
-    ok;
-rcpt_to_emails(Sock, [ToEmail | Rest]) ->
-    send_socket(Sock, "RCPT TO <" ++ ToEmail ++ ">\r\n"),
-    rcpt_to_emails(Sock, Rest).
-
 %% send socket
 send_socket(Sock, Data) when is_list(Data)->
-    send_socket(Sock, unicode:characters_to_binary(Data));
+    send_socket(Sock, unicode:characters_to_binary(Data, unicode, utf8));
 send_socket(Sock, Data) when is_binary(Data)->
-    io:format("Client: ~p~n", [Data]),
+    ?DEBUG("Email Client: ~p~n", [Data]),
     ok = send(Sock, Data).
 
 %% recv socket
 recv_socket(Sock) ->
     case recv(Sock, 0) of
-        {ok   , _W} -> io:format("Server: recv : ~p~n", [_W]), ok;
-        {error, Reason} -> io:format("Server: recv failed: ~p~n", [Reason])
+        {ok   , <<ErrCode:3/binary, _/binary>> = _Packet} -> 
+            if
+                ErrCode < <<"400">> -> ok;
+                true ->
+                    ?ERROR_MSG("Email Server: recv failed: ~p~n", [_Packet]),
+                    throw({error, ErrCode})
+            end;
+        {error, Reason} -> 
+            ?ERROR_MSG("Email Server: recv failed: ~p~n", [Reason])
     end.
 
 %% send data to server via tcp or ssl
@@ -160,12 +148,15 @@ recv(Sock, Opinion) when Sock#socket.type =:= tcp ->
 recv(Sock, Opinion) when Sock#socket.type =:= ssl ->
     ssl:recv(Sock#socket.sock, Opinion).
 
+
 test() ->
-    send(#email{server_ip   = "smtp.host.com", %% "smtp.qq.com",
-                account     = "youremail@host.com",
-                password    = "yourpassword",
-                subject     = "smtp邮件测试",
+    send(#email{
+                host   = "mail_server_host",
+                account     = <<"yourmail@somehost">>,
+                password    = <<"password">>,
+                subject     = <<"smtp邮件测试"/utf8>>,  % utf8 避免中文乱码
+                ssl         = ture,
                 content     = <<"您好,\r\n这是一封测试邮件，里面包含一组数字：0123456789。\r\n
-                                Hello,\r\nThis is a test message that content numbers: 012456789"/utf8>>,
-                to_emails   = ["yourtest@host.com"]
+                                Hello,\r\nThis is a test message that content numbers: 012456789."/utf8>>,
+                to          = ["mailaddr@host"]
     }).
